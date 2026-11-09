@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Runs a module of this repository inside its Nix shell, with rig-local device state.
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+module="$1"; shift
+export PHONE_KVM_STATE="${PHONE_KVM_STATE:-$root/build/state}"
+export PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
+if [ -n "${PHONE_KVM_SHELL:-}" ]; then
+  exec python -m "$module" "$@"
+fi
+PHONE_KVM_SHELL=1 exec nix develop "$root" --command python -m "$module" "$@"

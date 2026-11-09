@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Runs the tests: the device logic always, and the device against the virtual phone when the
+# rig is up (bin/rig up).
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root" || exit 1
+if [ -n "${PHONE_KVM_SHELL:-}" ]; then
+  exec python -m pytest -q -rs tests "$@"
+fi
+PHONE_KVM_SHELL=1 exec nix develop "$root" --command python -m pytest -q -rs tests "$@"
