@@ -10,6 +10,11 @@
 
   rig up | down | status      one JSON object each
 
+`rig up --phone real --serial SERIAL` puts a real phone in the virtual one's place: the cable
+becomes a debugging one (rig/uhid.py), which gives the phone the board's HID interfaces over
+adb, USB or Wi-Fi, and the camera view comes from a webcam on this host looking at the phone
+(rig/webcam.py).
+
 The host software (phone_kvm/) is not part of the rig and does not know it is virtual: it
 talks to the board over TCP as it would to the real one. adb appears here only as the oracle
 the tests check against.
@@ -42,10 +47,13 @@ DEVICE = "127.0.0.1:7777"      # the board's TCP service, forwarded out of the e
 BOARD_USB = "127.0.0.1:7778"   # the board's USB port: a socket carrying rig/cable.py's frames
 USBIP_PORT = "3241"            # not 3240, which a normal usbipd on this host would use
 PICTURE = RUN / "camera" / "picture.jpg"
+REAL = RUN / "real.json"             # written by rig/uhid.py once the real phone has the board's interfaces
+PHONE = RUN / "phone"                # which phone the rig is up with: virtual or real
 ACTIVITY = RUN / "usb-activity"   # touched by the cable per USB report; the camera view waits on it
 # The virtual phone lies with its top towards the right of the camera's frame.
 CONFIG = {"device": DEVICE, "rotate": 90}
 ID = "1209", "0001"
+SEEN = f"vendor=0x{ID[0]}, product=0x{ID[1]}"   # the board in the phone's `dumpsys input`
 ENV = {**os.environ, "ANDROID_AVD_HOME": str(BUILD / "avd"), "ANDROID_USER_HOME": str(BUILD / "android-home")}
 
 
@@ -70,9 +78,9 @@ def pid(name):
     return None
 
 
-def spawn(name, cmd):
+def spawn(name, cmd, env=ENV):
     log = (BUILD / f"{name}.log").open("w")
-    process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=ENV, start_new_session=True)
+    process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
     (RUN / f"{name}.pid").write_text(str(process.pid))
 
 
@@ -209,53 +217,99 @@ def start_board():
     raise SystemExit(f"the board did not start; see {BUILD / 'board-console.log'}")
 
 
-def start_camera(sensor):
+def start_camera(command, rotate):
     if not pid("camera"):
         PICTURE.unlink(missing_ok=True)
-        spawn("camera", [sys.executable, "-m", "rig.camera", "--adb", ADB, "--serial", SERIAL,
-                         "--picture", str(PICTURE), "--scratch", str(RUN / "camera" / "display"),
-                         "--activity", str(ACTIVITY), "--size", sensor])
+        spawn("camera", [sys.executable, "-m", *command, "--picture", str(PICTURE)])
     for _ in range(100):
         if PICTURE.exists():
             break
         time.sleep(0.2)
     else:
         raise SystemExit(f"the camera view did not start; see {BUILD / 'camera.log'}")
-    state.save("config", CONFIG)
+    state.save("config", {"device": DEVICE, "rotate": rotate})
     for record in ("geometry", "calibration", "session"):
         state.save(record, {})
 
 
+# -- real phone ---------------------------------------------------------------------------
+def real_adb(*cmd):
+    """adb as the user runs it: the key the real phone has authorised is theirs, not the rig's."""
+    return subprocess.run([ADB, *cmd], capture_output=True, text=True)
+
+
+def plug_real(serial):
+    if not pid("cable"):
+        if ":" in serial:   # a phone on Wi-Fi
+            real_adb("connect", serial)
+        if real_adb("-s", serial, "get-state").stdout.strip() != "device":
+            raise SystemExit(f"adb does not reach {serial}; turn on USB debugging and accept this computer on the phone")
+        REAL.unlink(missing_ok=True)
+        spawn("cable", [sys.executable, "-m", "rig.uhid", "--board", BOARD_USB, "--adb", ADB, "--serial", serial,
+                        "--status", str(REAL)], env=os.environ)
+    for _ in range(100):
+        if REAL.exists():
+            return
+        time.sleep(0.1)
+    raise SystemExit(f"the debugging cable did not start; see {BUILD / 'cable.log'}")
+
+
 # -- commands --------------------------------------------------------------------------
-def up(sensor):
+def up(args):
     RUN.mkdir(parents=True, exist_ok=True)
-    sudo("modprobe", "vhci-hcd")
+    if PHONE.exists() and PHONE.read_text() != args.phone:
+        raise SystemExit(f"the rig is up with the {PHONE.read_text()} phone; take it down first")
+    PHONE.write_text(args.phone)
     start_board()
-    plug_usb()
-    start_phone()
-    start_camera(sensor)
+    if args.phone == "real":
+        if not args.serial:
+            raise SystemExit("--phone real needs --serial: the phone as `adb devices` names it")
+        plug_real(args.serial)
+        start_camera(["rig.webcam", "--device", args.webcam, "--size", args.camera or "1920x1080"], args.rotate)
+    else:
+        sudo("modprobe", "vhci-hcd")
+        plug_usb()
+        start_phone()
+        start_camera(["rig.camera", "--adb", ADB, "--serial", SERIAL, "--scratch", str(RUN / "camera" / "display"),
+                      "--activity", str(ACTIVITY), "--size", args.camera or "1600x1200"], CONFIG["rotate"])
     return status()
 
 
 def down():
     stop("camera")
-    stop_phone()
-    unplug_usb()
+    if PHONE.exists() and PHONE.read_text() == "real":
+        stop("cable")
+    else:
+        stop_phone()
+        unplug_usb()
     stop("board")
+    PHONE.unlink(missing_ok=True)
     return status()
 
 
 def status():
-    device = host_device()
     board = device_status() if pid("board") else None
+    camera = {"picture": str(PICTURE), "running": bool(pid("camera"))}
+    plugged = bool(board and board["plugged"] and pid("camera"))
+    if PHONE.exists() and PHONE.read_text() == "real":
+        cable = json.loads(REAL.read_text()) if pid("cable") and REAL.exists() else None
+        sees = bool(cable) and SEEN in real_adb("-s", cable["serial"], "shell", "dumpsys", "input").stdout
+        return {
+            "board": {"running": bool(pid("board")), "device": DEVICE, "status": board},
+            "debugging_cable": cable,
+            "phone": {"serial": cable and cable["serial"], "sees_device": sees},
+            "camera_view": camera,
+            "ready": bool(plugged and sees),
+        }
+    device = host_device()
     phone_up = bool(pid("emulator")) and booted()
-    sees = phone_up and f"vendor=0x{ID[0]}, product=0x{ID[1]}" in adb("shell", "dumpsys", "input", check=False).stdout
+    sees = phone_up and SEEN in adb("shell", "dumpsys", "input", check=False).stdout
     return {
         "board": {"running": bool(pid("board")), "device": DEVICE, "status": board},
         "usb_cable": {"attached": device is not None, "interface_drivers": drivers(device) if device else None},
         "phone": {"serial": SERIAL, "booted": phone_up, "sees_device": sees},
-        "camera_view": {"picture": str(PICTURE), "running": bool(pid("camera"))},
-        "ready": bool(board and board["plugged"] and sees and pid("camera")),
+        "camera_view": camera,
+        "ready": bool(plugged and sees),
     }
 
 
@@ -263,9 +317,14 @@ def main():
     parser = argparse.ArgumentParser(prog="rig", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["up", "down", "status"])
-    parser.add_argument("--camera", default="1600x1200", help="the camera's sensor resolution (up)")
+    parser.add_argument("--phone", choices=["virtual", "real"], default="virtual", help="which phone (up)")
+    parser.add_argument("--serial", help="the real phone, as `adb devices` names it (up)")
+    parser.add_argument("--camera", help="the camera's resolution (up); 1600x1200 virtual, 1920x1080 real")
+    parser.add_argument("--webcam", default="/dev/video0", help="the webcam looking at the real phone (up)")
+    parser.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
+                        help="how far clockwise the real phone appears turned in the webcam's picture (up)")
     args = parser.parse_args()
-    print(json.dumps({"up": lambda: up(args.camera), "down": down, "status": status}[args.command](), indent=1))
+    print(json.dumps({"up": lambda: up(args), "down": down, "status": status}[args.command](), indent=1))
 
 
 if __name__ == "__main__":

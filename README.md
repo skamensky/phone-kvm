@@ -34,6 +34,17 @@ After `rig up`, find the screen and measure the pointer once:
     bin/phonectl key meta+i && bin/phonectl calibrate screen    # a light screen: Settings
     bin/phonectl key home && bin/phonectl calibrate pointer
 
+### A real phone in the rig
+
+The simulated board can drive a real phone that has USB debugging on, over USB or Wi-Fi, with
+a webcam on this host as the board's camera:
+
+    bin/rig up --phone real --serial 10.0.0.5:5555 --webcam /dev/video0 --rotate 0
+
+`--serial` is the phone as `adb devices` names it. The phone gets the board's four HID
+interfaces as devices in its own kernel (`rig/uhid.py`). `python -m rig.view` serves the
+camera's picture to a browser, for aiming the webcam.
+
 ## Using the phone
 
 Every command prints one JSON object. Positions are pixels of the screenshot.

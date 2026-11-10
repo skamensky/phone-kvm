@@ -20,7 +20,10 @@ from phone_kvm import hid  # noqa: E402
 
 if "ANDROID_HOME" not in os.environ:
     pytest.skip("not in the project's Nix shell", allow_module_level=True)
-from rig.__main__ import ADB, BUILD, CONFIG, ENV, SERIAL, adb, status  # noqa: E402
+from rig.__main__ import ADB, BUILD, CONFIG, ENV, PHONE, SERIAL, adb, status  # noqa: E402
+
+if PHONE.exists() and PHONE.read_text() == "real":
+    pytest.skip("the rig is up with a real phone; these tests check against the virtual one", allow_module_level=True)
 
 if not status()["ready"]:
     pytest.skip("the rig is not up (bin/rig up)", allow_module_level=True)

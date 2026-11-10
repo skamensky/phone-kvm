@@ -30,8 +30,8 @@ TIMEOUT = 2.0
 class Board:
     """The board's end: frames in and out, sorted by what they answer."""
 
-    def __init__(self, address, activity):
-        self.activity = activity
+    def __init__(self, address, reported):
+        self.reported = reported             # called for each report the board sends
         host, port = address.rsplit(":", 1)
         while True:
             try:
@@ -73,7 +73,7 @@ class Board:
                     if kind != b"F":
                         self.control.put((kind, data))
                 elif kind == b"I":
-                    self.activity.touch()
+                    self.reported()
                     if self.waiting.get(endpoint):
                         self.waiting[endpoint].pop(0)(data)
                         self.send(b"K", endpoint)
@@ -232,7 +232,7 @@ def main():
     parser.add_argument("--activity", required=True, type=Path,
                         help="a file touched whenever the board sends a report (rig/camera.py waits on it)")
     args = parser.parse_args()
-    board = Board(args.board, args.activity)
+    board = Board(args.board, args.activity.touch)
     listener = socket.create_server(("127.0.0.1", args.port))
 
     def connected(connection):

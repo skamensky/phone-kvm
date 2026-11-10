@@ -204,7 +204,22 @@ Needs the real board and a real phone:
 5. **Sleep.** A phone may suspend USB when asleep; whether the power key wakes it over USB
    varies by phone. In the rig it does.
 6. **Other Android builds.** The rig's phone is stock Android 16; MIUI, One UI and others
-   may treat an external touchscreen or mouse differently.
+   may treat an external touchscreen or mouse differently. One has been tried, through the
+   debugging cable below: a Redmi Note 12 Pro+ (Android 14, MIUI, kernel 4.19). Its kernel is
+   built without `hid-multitouch`, so the touch interface gets the generic driver, which does
+   not mark it as a screen, and Android treats it as a touchpad: touches do nothing useful. A
+   single-touch pen digitizer fares the same there. Keyboard, consumer keys and mouse work,
+   on the lock screen too: a key wakes the phone and a mouse drag swipes to the pattern pad.
+   On such phones the mouse is the pointing device.
+
+A real phone can stand in for the virtual one before the board exists (`rig up --phone real`).
+This host has no USB port that can be a device, so `rig/uhid.py` is the cable: it is the USB
+host the simulated board expects, and it creates each of the board's interfaces as a HID
+device in the phone's kernel (uhid) over adb, with the interface's own descriptor and every
+report the firmware sends. `rig/webcam.py` puts a webcam's picture in front of the board's
+camera. This exercises the phone's HID drivers and input stack and real optics; it does not
+exercise USB itself, needs debugging on, and cannot reach a phone before its first unlock
+after boot.
 
 Known limits by design: `type` sends keys of a US layout, so text outside printable ASCII
 needs the phone's own input method (or pasting); the screenshot has the resolution the
