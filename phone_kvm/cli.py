@@ -12,24 +12,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="phonectl", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="gadget, capture device and screen geometry")
-    p = sub.add_parser("setup", help="choose the capture device and what it is")
-    p.add_argument("--video", required=True, metavar="/dev/videoN")
-    p.add_argument("--view", choices=["hdmi", "camera"], default="hdmi",
-                   help="hdmi: an HDMI capture of the phone's video output; camera: a camera looking at the phone")
+    sub.add_parser("status", help="the device, the screen's place in its camera's view, calibration")
+    p = sub.add_parser("setup", help="say where the device is; its token, if it has one, is read "
+                       "from the environment variable PHONE_KVM_TOKEN by every command")
+    p.add_argument("--device", required=True, metavar="HOST[:PORT]")
     p.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0,
-                   help="camera: degrees clockwise the phone appears turned in the camera's frame")
-    p.add_argument("--size", metavar="WxH", help="frame size to ask the device for (its default otherwise)")
-    p.add_argument("--input-format", help="pixel format to ask the device for, such as mjpeg")
+                   help="degrees clockwise the phone appears turned in the camera's frame")
     p = sub.add_parser("screenshot", help="write the phone's screen to a PNG")
     p.add_argument("path")
     p.add_argument("--settle-ms", type=int, default=2000,
                    help="wait up to this long for the screen to stop changing; 0 captures at once")
     p = sub.add_parser("calibrate", help="measure what ties an image to inputs. screen: where the screen is in "
-                       "the frame (a camera needs a light screen, such as Settings: key meta+i). pointer: cursor "
+                       "the camera's frame (needs a light screen, such as Settings: key meta+i). pointer: cursor "
                        "travel per mouse count and input-to-image delay (on a still screen, such as home)")
     p.add_argument("what", nargs="?", choices=["all", "screen", "pointer"], default="all")
-    p = sub.add_parser("frame", help="save the capture device's whole frame, for aiming a camera")
+    p = sub.add_parser("frame", help="save the camera's whole frame, for aiming it")
     p.add_argument("path")
     p = sub.add_parser("tap")
     p.add_argument("x", type=int)
@@ -77,8 +74,7 @@ def main(argv=None):
 
 def run(args):
     if args.command == "setup":
-        config = {"video": args.video, "view": args.view, "rotate": args.rotate, "size": args.size,
-                  "input_format": args.input_format}
+        config = {"device": args.device, "rotate": args.rotate}
         state.save("config", config)
         for record in ("geometry", "calibration", "session"):
             state.save(record, {})

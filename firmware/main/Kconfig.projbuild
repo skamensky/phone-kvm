@@ -1,0 +1,19 @@
+menu "phone-kvm"
+
+    config PHONE_KVM_SIM
+        bool "Build for the simulated board (QEMU)"
+        default n
+        help
+            The simulated board has the same USB controller as the real one, a camera that
+            reads its picture from the emulator, and a wired network in place of Wi-Fi.
+
+    config PHONE_KVM_PORT
+        int "TCP port the device listens on"
+        default 7777
+
+    config PHONE_KVM_LED_GPIO
+        int "Status LED GPIO"
+        default 48
+        depends on !PHONE_KVM_SIM
+
+endmenu

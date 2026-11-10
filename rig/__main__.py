@@ -1,15 +1,18 @@
-"""The virtual test rig: everything around the device that would be hardware.
+"""The virtual test rig: the device and everything around it that would be hardware.
 
+  board        the ESP32-S3 board, simulated: the real firmware (firmware/, built for the
+               simulated board) running in Espressif's QEMU, with the USB controller and camera
+               this repository adds to it (sim/qemu/)
+  USB cable    rig/cable.py: from the board's USB port to this host's USB stack over USB/IP,
+               then passed through into the phone
   phone        Google's Android emulator (headless)
-  USB cable    the device's gadget on the kernel's virtual controller (usbip-vudc), attached
-               to this host over USB/IP, then passed through into the emulator
-  HDMI cable   the emulator's display written to a V4L2 loopback device (rig/hdmi.py)
-  camera       the phone as a camera above it sees it, on a second loopback device (rig/camera.py)
+  camera view  rig/camera.py: the phone as the board's camera sees it from above
 
   rig up | down | status      one JSON object each
 
-The device software (phone_kvm/) is not part of the rig and does not know it is virtual.
-adb appears here only as the cable and as the oracle the tests check against.
+The host software (phone_kvm/) is not part of the rig and does not know it is virtual: it
+talks to the board over TCP as it would to the real one. adb appears here only as the oracle
+the tests check against.
 """
 import argparse
 import json
@@ -20,7 +23,8 @@ import sys
 import time
 from pathlib import Path
 
-from phone_kvm import gadget, state
+from phone_kvm import state
+from phone_kvm.device import Device
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
@@ -32,14 +36,15 @@ IMAGE = "system-images;android-36;google_apis;x86_64"
 AVD = "phone"
 CONSOLE_PORT = 5580
 SERIAL = f"emulator-{CONSOLE_PORT}"
-CONTROLLER = "usbip-vudc.0"
-USBIP_PORT = "3241"  # not 3240, which a normal usbipd on this host would use
-VIDEO_NR, CAMERA_NR = 42, 43
-VIDEO, CAMERA = f"/dev/video{VIDEO_NR}", f"/dev/video{CAMERA_NR}"
-HDMI_VIEW = {"video": VIDEO, "view": "hdmi", "rotate": 0, "size": None, "input_format": None}
+FIRMWARE = ROOT / "firmware"
+FLASH = FIRMWARE / "build-sim" / "flash.bin"
+DEVICE = "127.0.0.1:7777"      # the board's TCP service, forwarded out of the emulated board
+BOARD_USB = "127.0.0.1:7778"   # the board's USB port: a socket carrying rig/cable.py's frames
+USBIP_PORT = "3241"            # not 3240, which a normal usbipd on this host would use
+PICTURE = RUN / "camera" / "picture.jpg"
 # The virtual phone lies with its top towards the right of the camera's frame.
-CAMERA_VIEW = {"video": CAMERA, "view": "camera", "rotate": 90, "size": None, "input_format": None}
-ID = f"{gadget.VENDOR_ID:04x}", f"{gadget.PRODUCT_ID:04x}"
+CONFIG = {"device": DEVICE, "rotate": 90}
+ID = "1209", "0001"
 ENV = {**os.environ, "ANDROID_AVD_HOME": str(BUILD / "avd"), "ANDROID_USER_HOME": str(BUILD / "android-home")}
 
 
@@ -70,19 +75,16 @@ def spawn(name, cmd):
     (RUN / f"{name}.pid").write_text(str(process.pid))
 
 
-def stop(name, root=False):
+def stop(name):
     value = pid(name)
     if value:
-        if root:
-            sudo("kill", str(value), check=False)
-        else:
-            os.killpg(value, signal.SIGTERM)
+        os.killpg(value, signal.SIGTERM)
     (RUN / f"{name}.pid").unlink(missing_ok=True)
 
 
 # -- USB cable -------------------------------------------------------------------------
 def host_device():
-    """The gadget as this host's USB stack sees it: its sysfs directory, or None."""
+    """The board as this host's USB stack sees it: its sysfs directory, or None."""
     for path in Path("/sys/bus/usb/devices").glob("*"):
         vendor = path / "idVendor"
         if (vendor.exists() and (vendor.read_text().strip(), (path / "idProduct").read_text().strip()) == ID
@@ -98,17 +100,20 @@ def drivers(device):
 
 def plug_usb():
     if host_device() is None:
-        if not pid("usbipd"):
-            sudo("usbipd", "--device", "--daemon", "--tcp-port", USBIP_PORT, "--pid", str(RUN / "usbipd.pid"))
-            time.sleep(0.5)
-        sudo("usbip", "--tcp-port", USBIP_PORT, "attach", "--remote", "127.0.0.1", "--device", CONTROLLER)
+        if not pid("cable"):
+            spawn("cable", [sys.executable, "-m", "rig.cable", "--board", BOARD_USB, "--port", USBIP_PORT])
+        for _ in range(50):   # until the board has pulled its USB port up
+            if sudo("usbip", "--tcp-port", USBIP_PORT, "attach", "--remote", "127.0.0.1", "--busid", "1-1",
+                    check=False).returncode == 0:
+                break
+            time.sleep(0.2)
     for _ in range(50):
         device = host_device()
         if device and drivers(device):
             break
         time.sleep(0.1)
     else:
-        raise SystemExit("the gadget did not appear on this host's USB bus")
+        raise SystemExit("the board did not appear on this host's USB bus")
     # This host must never use the device as its own keyboard and touchscreen: detach its HID
     # driver. The emulator then claims the interfaces through usbfs.
     time.sleep(0.5)
@@ -127,7 +132,7 @@ def unplug_usb():
             port = line.split()[1].rstrip(":")
         elif ":".join(ID) in line and port is not None:
             sudo("usbip", "detach", "--port", str(int(port)), check=False)
-    stop("usbipd", root=True)
+    stop("cable")
 
 
 # -- phone -----------------------------------------------------------------------------
@@ -162,57 +167,93 @@ def stop_phone():
     stop("emulator")
 
 
-# -- HDMI cable and camera -----------------------------------------------------------
-def plug_video(hdmi, camera):
-    if not (Path(VIDEO).exists() and Path(CAMERA).exists()):
-        stop("hdmi")
-        sudo("modprobe", "-r", "v4l2loopback", check=False)
-        sudo("modprobe", "v4l2loopback", f"video_nr={VIDEO_NR},{CAMERA_NR}", "exclusive_caps=1,1",
-             "card_label=phone-kvm virtual HDMI capture,phone-kvm virtual camera")
-    if not pid("hdmi"):
-        spawn("hdmi", [sys.executable, "-m", "rig.hdmi", "--adb", ADB, "--serial", SERIAL,
-                       "--device", VIDEO, "--size", hdmi])
+# -- board -----------------------------------------------------------------------------
+def firmware():
+    """Build the firmware for the simulated board if its sources are newer than the image."""
+    sources = [FIRMWARE / "CMakeLists.txt", *FIRMWARE.glob("sdkconfig.*"), *(FIRMWARE / "main").iterdir()]
+    if FLASH.exists() and FLASH.stat().st_mtime >= max(path.stat().st_mtime for path in sources):
+        return
+    done = subprocess.run(["nix", "develop", f"{ROOT}#firmware", "--command", str(FIRMWARE / "build.sh"), "sim"],
+                          capture_output=True, text=True)
+    if done.returncode:
+        raise SystemExit("the firmware does not build:\n" + (done.stdout + done.stderr)[-3000:])
+
+
+def device_status():
+    try:
+        return Device(DEVICE).status()
+    except (OSError, RuntimeError):
+        return None
+
+
+def start_board():
+    if not pid("board"):
+        firmware()
+        flash = RUN / "flash.bin"   # the board's own flash chip: it writes to it
+        flash.write_bytes(FLASH.read_bytes())
+        PICTURE.parent.mkdir(parents=True, exist_ok=True)
+        host, port = BOARD_USB.split(":")
+        spawn("board", ["qemu-system-xtensa", "-M", "esp32s3", "-nographic", "-monitor", "none",
+                        "-serial", f"file:{BUILD / 'board-console.log'}",
+                        "-drive", f"file={flash},if=mtd,format=raw",
+                        "-chardev", f"socket,id=usb,host={host},port={port},server=on,wait=off,nodelay=on",
+                        "-global", "driver=esp32s3.usb_otg,property=chardev,value=usb",
+                        "-global", f"driver=esp32s3.simcam,property=file,value={PICTURE}",
+                        "-nic", f"user,model=open_eth,hostfwd=tcp:{DEVICE}-:{DEVICE.split(':')[1]}"])
+    for _ in range(150):
+        if device_status():
+            return
+        time.sleep(0.2)
+    raise SystemExit(f"the board did not start; see {BUILD / 'board-console.log'}")
+
+
+def start_camera(sensor):
     if not pid("camera"):
+        PICTURE.unlink(missing_ok=True)
         spawn("camera", [sys.executable, "-m", "rig.camera", "--adb", ADB, "--serial", SERIAL,
-                         "--device", CAMERA, "--scratch", str(RUN / "camera"), "--size", camera])
-    state.save("config", HDMI_VIEW)
+                         "--picture", str(PICTURE), "--scratch", str(RUN / "camera" / "display"),
+                         "--size", sensor])
+    for _ in range(100):
+        if PICTURE.exists():
+            break
+        time.sleep(0.2)
+    else:
+        raise SystemExit(f"the camera view did not start; see {BUILD / 'camera.log'}")
+    state.save("config", CONFIG)
     for record in ("geometry", "calibration", "session"):
         state.save(record, {})
 
 
 # -- commands --------------------------------------------------------------------------
-def up(hdmi, camera):
+def up(sensor):
     RUN.mkdir(parents=True, exist_ok=True)
-    sudo("modprobe", "-a", "libcomposite", "usbip-vudc", "vhci-hcd")
-    if not gadget.status()["up"]:
-        sudo("env", f"PYTHONPATH={ROOT}", sys.executable, "-m", "phone_kvm.gadget", "up",
-             "--controller", CONTROLLER, "--owner", str(os.getuid()))
+    sudo("modprobe", "vhci-hcd")
+    start_board()
     plug_usb()
     start_phone()
-    plug_video(hdmi, camera)
+    start_camera(sensor)
     return status()
 
 
 def down():
-    stop("hdmi")
     stop("camera")
     stop_phone()
     unplug_usb()
-    sudo("env", f"PYTHONPATH={ROOT}", sys.executable, "-m", "phone_kvm.gadget", "down")
+    stop("board")
     return status()
 
 
 def status():
     device = host_device()
+    board = device_status() if pid("board") else None
     phone_up = bool(pid("emulator")) and booted()
     sees = phone_up and f"vendor=0x{ID[0]}, product=0x{ID[1]}" in adb("shell", "dumpsys", "input", check=False).stdout
     return {
-        "gadget": gadget.status(),
+        "board": {"running": bool(pid("board")), "device": DEVICE, "status": board},
         "usb_cable": {"attached": device is not None, "interface_drivers": drivers(device) if device else None},
         "phone": {"serial": SERIAL, "booted": phone_up, "sees_device": sees},
-        "hdmi_cable": {"device": VIDEO, "running": bool(pid("hdmi"))},
-        "camera": {"device": CAMERA, "running": bool(pid("camera"))},
-        "ready": bool(sees and pid("hdmi") and pid("camera")),
+        "camera_view": {"picture": str(PICTURE), "running": bool(pid("camera"))},
+        "ready": bool(board and board["plugged"] and sees and pid("camera")),
     }
 
 
@@ -220,10 +261,9 @@ def main():
     parser = argparse.ArgumentParser(prog="rig", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["up", "down", "status"])
-    parser.add_argument("--hdmi", default="1920x1080", help="HDMI frame size (up)")
-    parser.add_argument("--camera", default="1600x1200", help="camera sensor resolution (up)")
+    parser.add_argument("--camera", default="1600x1200", help="the camera's sensor resolution (up)")
     args = parser.parse_args()
-    print(json.dumps({"up": lambda: up(args.hdmi, args.camera), "down": down, "status": status}[args.command](), indent=1))
+    print(json.dumps({"up": lambda: up(args.camera), "down": down, "status": status}[args.command](), indent=1))
 
 
 if __name__ == "__main__":

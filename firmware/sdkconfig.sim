@@ -1,0 +1,4 @@
+# The simulated board (QEMU): wired network, emulator camera, no PSRAM.
+CONFIG_PHONE_KVM_SIM=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ETH_USE_OPENETH=y

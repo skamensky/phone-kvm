@@ -1,34 +1,7 @@
-"""The device's own logic, with no phone attached: descriptors, reports and the key map."""
+"""The host software's own logic, with no board or phone: reports and the key map."""
 import pytest
 
 from phone_kvm import hid, keymap
-
-
-def input_bits(descriptor):
-    """Parse a HID report descriptor's short items; return the input report's length in bits."""
-    bits = size = count = 0
-    i = 0
-    while i < len(descriptor):
-        prefix = descriptor[i]
-        length = (0, 1, 2, 4)[prefix & 3]
-        value = int.from_bytes(descriptor[i + 1:i + 1 + length], "little")
-        tag = prefix & 0xFC
-        assert tag != 0x84, "report IDs would change every report's layout"
-        if tag == 0x74:
-            size = value
-        elif tag == 0x94:
-            count = value
-        elif tag == 0x80:
-            bits += size * count
-        i += 1 + length
-    assert i == len(descriptor), "descriptor ends inside an item"
-    return bits
-
-
-@pytest.mark.parametrize("name", hid.INTERFACES)
-def test_descriptor_describes_the_report_the_gadget_declares(name):
-    descriptor, length, _, _ = hid.INTERFACES[name]
-    assert input_bits(descriptor) == length * 8
 
 
 def test_reports_have_the_declared_length():

@@ -1,9 +1,10 @@
-"""The virtual camera: the phone lying on a desk as a camera above it sees it, on a V4L2 loopback
-device.
+"""The scene in front of the simulated board's camera: the phone lying on a desk, as a camera
+above it sees it. The latest picture is kept in a JPEG file, which the board's camera
+(sim/qemu/esp32s3_simcam.c) reads whenever the firmware takes one.
 
-Unlike the phone's video output (rig/hdmi.py), a camera sees what a person sees, including the
-windows Android blanks on its video output: lock-screen entry and banking apps. So the picture
-comes from the emulator's own display (its console's screenshot), not from Android's screencap.
+A camera sees what a person sees, including the windows Android blanks on its video output:
+lock-screen entry and banking apps. So the picture comes from the emulator's own display (its
+console's screenshot), not from Android's screencap.
 
 The scene: the phone lies on its side so that its long edge runs along the sensor's long edge,
 fills part of the frame, has a black bezel, sits on a dark desk and is seen slightly off-axis
@@ -66,7 +67,8 @@ def encoder(size, args):
     return subprocess.Popen(
         ["ffmpeg", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "%dx%d" % size,
          "-r", str(FPS), "-i", "-", "-filter_complex", scene(*size, sensor, args.fill, args.blur, args.noise),
-         "-pix_fmt", "yuyv422", "-f", "v4l2", args.device],
+         "-pix_fmt", "yuvj420p", "-q:v", "3", "-f", "image2", "-update", "1", "-atomic_writing", "1",
+         str(args.picture)],
         stdin=subprocess.PIPE)
 
 
@@ -74,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--adb", required=True)
     parser.add_argument("--serial", required=True)
-    parser.add_argument("--device", required=True)
+    parser.add_argument("--picture", required=True, type=Path, help="the JPEG file to keep current")
     parser.add_argument("--scratch", required=True, type=Path)
     parser.add_argument("--size", default="1600x1200", help="the sensor's resolution")
     parser.add_argument("--fill", type=float, default=0.8, help="how much of the frame's width the screen spans")

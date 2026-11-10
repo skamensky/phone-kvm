@@ -1,7 +1,7 @@
 """The device against the virtual phone. Input goes in only through `phonectl` (USB HID) and
 the screen comes out only through `phonectl screenshot`; adb is the oracle that says what
-Android actually did. Every test runs twice: seeing the phone through the virtual HDMI capture,
-and through the virtual camera above it. Needs `bin/rig up`; skipped otherwise.
+Android actually did. The device is the simulated board running the real firmware, and it sees
+the phone through its camera. Needs `bin/rig up`; skipped otherwise.
 """
 import io
 import json
@@ -16,9 +16,11 @@ import xml.etree.ElementTree as ET
 import pytest
 from PIL import Image, ImageChops, ImageStat
 
+from phone_kvm import hid  # noqa: E402
+
 if "ANDROID_HOME" not in os.environ:
     pytest.skip("not in the project's Nix shell", allow_module_level=True)
-from rig.__main__ import ADB, BUILD, CAMERA_VIEW, ENV, HDMI_VIEW, SERIAL, adb, status  # noqa: E402
+from rig.__main__ import ADB, BUILD, CONFIG, ENV, SERIAL, adb, status  # noqa: E402
 
 if not status()["ready"]:
     pytest.skip("the rig is not up (bin/rig up)", allow_module_level=True)
@@ -81,8 +83,8 @@ def events(action, seconds=1.5):
     return listener.communicate()[0]
 
 
-@pytest.fixture(scope="module", autouse=True, params=["hdmi", "camera"])
-def awake(request):
+@pytest.fixture(scope="module", autouse=True)
+def awake():
     for secret in CREDENTIALS:   # a failed earlier run may have left the phone locked
         adb("shell", "locksettings", "clear", "--old", shlex.quote(secret), check=False)
     if "Awake" not in adb("shell", "dumpsys", "power").stdout:
@@ -91,23 +93,18 @@ def awake(request):
     phonectl("key", "home")
     # Just after boot the launcher is still starting.
     assert until(lambda: "NexusLauncherActivity" in focus() and node(text="Chrome") is not None, 90)
-    global SCREEN, VIEW
-    VIEW = request.param
-    config = HDMI_VIEW if VIEW == "hdmi" else CAMERA_VIEW
-    phonectl("setup", "--video", config["video"], "--view", VIEW, "--rotate", config["rotate"])
-    if VIEW == "camera":
-        # A camera finds the screen by its light: Settings is light to all four edges, the home
-        # screen's wallpaper is not. Then the pointer on the home screen, which ignores hovering.
-        phonectl("key", "meta+i")
-        assert until(lambda: "com.android.settings" in focus())   # any of its pages is light
-        time.sleep(2)
-        phonectl("calibrate", "screen")
-        phonectl("key", "home")
-        assert until(lambda: "NexusLauncherActivity" in focus())
-        time.sleep(1)
-        result = phonectl("calibrate", "pointer")
-    else:
-        result = phonectl("calibrate")
+    global SCREEN
+    phonectl("setup", "--device", CONFIG["device"], "--rotate", CONFIG["rotate"])
+    # A camera finds the screen by its light: Settings is light to all four edges, the home
+    # screen's wallpaper is not. Then the pointer on the home screen, which ignores hovering.
+    phonectl("key", "meta+i")
+    assert until(lambda: "com.android.settings" in focus())   # any of its pages is light
+    time.sleep(2)
+    phonectl("calibrate", "screen")
+    phonectl("key", "home")
+    assert until(lambda: "NexusLauncherActivity" in focus())
+    time.sleep(1)
+    result = phonectl("calibrate", "pointer")
     SCREEN = result["width"], result["height"]
 
 
@@ -171,6 +168,35 @@ def test_android_enumerates_all_four_interfaces():
     assert all("IsExternal: true" in block for block in ours)
 
 
+def input_bits(descriptor):
+    """Parse a HID report descriptor's short items; return the input report's length in bits."""
+    bits = size = count = 0
+    i = 0
+    while i < len(descriptor):
+        prefix = descriptor[i]
+        length = (0, 1, 2, 4)[prefix & 3]
+        value = int.from_bytes(descriptor[i + 1:i + 1 + length], "little")
+        tag = prefix & 0xFC
+        assert tag != 0x84, "report IDs would change every report's layout"
+        if tag == 0x74:
+            size = value
+        elif tag == 0x94:
+            count = value
+        elif tag == 0x80:
+            bits += size * count
+        i += 1 + length
+    assert i == len(descriptor), "descriptor ends inside an item"
+    return bits
+
+
+def test_the_firmware_describes_the_reports_the_host_sends():
+    """The report descriptors Android read from the board, against the host's report lengths."""
+    dump = adb("shell", "su 0 sh -c 'for d in /sys/bus/hid/devices/*:1209:0001.*; do "
+               "od -An -v -tx1 $d/report_descriptor | tr -d \" \\n\"; echo; done'").stdout.split()
+    assert sorted(input_bits(bytes.fromhex(line)) for line in dump) == sorted(
+        length * 8 for _, length in hid.INTERFACES.values())
+
+
 def display():
     """What the phone's panel shows, from the emulator itself (the oracle)."""
     folder = BUILD / "run" / "oracle"
@@ -192,7 +218,7 @@ def test_screenshot_shows_what_the_phone_displays():
     assert max(difference) < 6, difference
 
 
-def test_lock_screen_entry_is_visible_only_to_a_camera():
+def test_lock_screen_entry_is_visible():
     """Android blanks secure windows on its video output; a camera sees the panel itself."""
     try:
         lock_with("pin", PIN)
@@ -200,11 +226,8 @@ def test_lock_screen_entry_is_visible_only_to_a_camera():
         path = BUILD / "test-lock.png"
         phonectl("screenshot", path)
         seen = Image.open(path).convert("L")
-        if VIEW == "hdmi":
-            assert seen.getextrema()[1] < 24
-        else:
-            difference = ImageStat.Stat(ImageChops.difference(seen, display().convert("L").resize(seen.size))).mean
-            assert seen.getextrema()[1] > 150 and difference[0] < 6, difference
+        difference = ImageStat.Stat(ImageChops.difference(seen, display().convert("L").resize(seen.size))).mean
+        assert seen.getextrema()[1] > 150 and difference[0] < 6, difference
         phonectl("type", PIN)
         phonectl("key", "enter")
         assert until(lambda: not locked())
@@ -229,7 +252,8 @@ def test_screenshot_says_where_the_cursor_is_and_never_predates_an_input():
         target = [round(SCREEN[0] * at[0]), round(SCREEN[1] * at[1])]
         phonectl("mouse", "to", *target)
         shot = phonectl("screenshot", path)
-        assert shot["pointer"] == target and shot["settled"]
+        # The cursor moves more than a screenshot pixel per count, so it lands within one.
+        assert all(abs(shot["pointer"][i] - target[i]) <= 1 for i in (0, 1)) and shot["settled"], (shot, target)
         seen = cursor(path)
         assert abs(seen[0] - target[0]) <= slack and abs(seen[1] - target[1]) <= slack, (seen, target)
     # A relative move is tracked too, and a screenshot taken at once, with no settling, already

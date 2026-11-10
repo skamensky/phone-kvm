@@ -1,0 +1,38 @@
+diff -ru a/hw/misc/meson.build b/hw/misc/meson.build
+--- a/hw/misc/meson.build	2026-11-10 10:16:35.278170926 +0200
++++ b/hw/misc/meson.build	2026-11-10 10:16:35.293817359 +0200
+@@ -159,6 +159,8 @@
+ ))
+ 
+ system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files(
++  'esp32s3_usb_otg.c',
++  'esp32s3_simcam.c',
+   'esp32s3_cache.c',
+   'ssi_psram.c',
+   'esp_sha.c',
+diff -ru a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+--- a/hw/xtensa/esp32s3.c	2026-11-10 10:16:35.277038419 +0200
++++ b/hw/xtensa/esp32s3.c	2026-11-10 10:16:35.293707955 +0200
+@@ -845,6 +845,22 @@
+         memory_region_add_subregion_overlap(sys_mem, esp32s3_memmap[ESP32S3_MEMREGION_FRAMEBUF].base, &ss->rgb.vram, 0);
+     }
+ 
++    /* phone-kvm: the USB OTG controller, its cable a character device, and a file-backed camera */
++    {
++        DeviceState *usb = qdev_new("esp32s3.usb_otg");
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(usb), &error_fatal);
++        memory_region_add_subregion_overlap(sys_mem, 0x60080000,
++                                            sysbus_mmio_get_region(SYS_BUS_DEVICE(usb), 0), 0);
++        sysbus_connect_irq(SYS_BUS_DEVICE(usb), 0,
++                           qdev_get_gpio_in(DEVICE(&ss->intmatrix), ETS_USB_INTR_SOURCE));
++
++        DeviceState *camera = qdev_new("esp32s3.simcam");
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(camera), &error_fatal);
++        memory_region_add_subregion_overlap(sys_mem, 0x600d1000,
++                                            sysbus_mmio_get_region(SYS_BUS_DEVICE(camera), 0), 0);
++    }
++    create_unimplemented_device("esp32s3.usb_wrap", DR_REG_USB_WRAP_BASE, 0x1000);
++
+     esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.rmt", DR_REG_RMT_BASE, 0x1000);
+     esp32s3_soc_add_unimp_device(sys_mem, "esp32s3.iomux", DR_REG_IO_MUX_BASE, 0x2000);
+ 
