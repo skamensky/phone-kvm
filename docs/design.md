@@ -238,3 +238,9 @@ Measured in the rig: a picture takes about 60 ms, 20 input reports 0.11 s.
 2. The whole device on a simulated board: firmware, host software, tests. Done.
 3. The board: schematic, layout, order files. Done; not yet ordered.
 4. Assembled board against a real phone: the list above.
+
+## To do
+
+- Run the emulator tests (`bin/rig up`, `bin/check`) against `mouse to` as it is since it
+  corrects itself by camera. It has only been tried on a real phone; the rig was up with
+  that phone at the time, and the tests need the virtual one.
