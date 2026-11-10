@@ -20,6 +20,7 @@ from pathlib import Path
 from PIL import Image
 
 FPS = 10
+USB_QUIET = 0.15   # seconds without a USB report before the display is taken again
 DESK = "0x2a2622"
 
 
@@ -49,10 +50,17 @@ def still(image, sensor, fill, blur, noise):
     return Image.frombytes("RGB", sensor, done.stdout)
 
 
-def displays(adb, scratch):
-    """Yield the emulator's display, as RGBA images, as fast as its console hands them over."""
+def displays(adb, scratch, activity):
+    """Yield the emulator's display, as RGBA images, as fast as its console hands them over.
+
+    Taking the display stops the emulator for some 60 ms, and it then hands the phone the board's
+    USB reports late and in a burst, which a real phone never sees: a swipe turns into a jump.
+    So no picture is taken while reports are flowing (rig/cable.py touches `activity` for each).
+    """
     scratch.mkdir(parents=True, exist_ok=True)
     while True:
+        while activity.exists() and time.time() - activity.stat().st_mtime < USB_QUIET:
+            time.sleep(0.01)
         for old in scratch.glob("*.png"):
             old.unlink()
         subprocess.run([*adb, "emu", "screenrecord", "screenshot", str(scratch)], capture_output=True)
@@ -78,6 +86,7 @@ def main():
     parser.add_argument("--serial", required=True)
     parser.add_argument("--picture", required=True, type=Path, help="the JPEG file to keep current")
     parser.add_argument("--scratch", required=True, type=Path)
+    parser.add_argument("--activity", required=True, type=Path, help="the file rig/cable.py touches per report")
     parser.add_argument("--size", default="1600x1200", help="the sensor's resolution")
     parser.add_argument("--fill", type=float, default=0.8, help="how much of the frame's width the screen spans")
     parser.add_argument("--blur", type=float, default=0.8, help="lens blur, as a Gaussian sigma in sensor pixels")
@@ -87,7 +96,7 @@ def main():
     latest = {}
 
     def grab():
-        for image in displays([args.adb, "-s", args.serial], args.scratch):
+        for image in displays([args.adb, "-s", args.serial], args.scratch, args.activity):
             latest["image"] = image
 
     threading.Thread(target=grab, daemon=True).start()

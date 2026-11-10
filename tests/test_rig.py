@@ -96,7 +96,7 @@ def awake():
     global SCREEN
     phonectl("setup", "--device", CONFIG["device"], "--rotate", CONFIG["rotate"])
     # A camera finds the screen by its light: Settings is light to all four edges, the home
-    # screen's wallpaper is not. Then the pointer on the home screen, which ignores hovering.
+    # screen's wallpaper is not. Then the pointer on the home screen, which is still.
     phonectl("key", "meta+i")
     assert until(lambda: "com.android.settings" in focus())   # any of its pages is light
     time.sleep(2)
@@ -127,6 +127,11 @@ def dismiss():
     def gone():
         adb("shell", "wm", "dismiss-keyguard")
         time.sleep(1)
+        if locked():   # an entry screen left open after a refused credential: sleep and wake
+            adb("shell", "input", "keyevent", "26")
+            time.sleep(2)
+            adb("shell", "input", "keyevent", "26")
+            time.sleep(2)
         return not locked()
     assert until(gone, 15)
 
@@ -146,7 +151,9 @@ def lock_with(kind, secret):
     assert until(lambda: wakefulness() == "Awake" and locked())
     time.sleep(1)
     x = SCREEN[0] // 2
-    phonectl("swipe", x, SCREEN[1] * 5 // 6, x, SCREEN[1] // 4, "--ms", 250)   # up to the entry screen
+    # Up to the entry screen, from above where an on-screen keyboard would be.
+    phonectl("swipe", x, SCREEN[1] * 3 // 5, x, SCREEN[1] // 8, "--ms", 250)
+    phonectl("screenshot", BUILD / "test-entry.png")   # as an agent would: look before typing
 
 
 def settings():
@@ -248,7 +255,8 @@ def test_screenshot_says_where_the_cursor_is_and_never_predates_an_input():
     path, slack = BUILD / "test-cursor.png", max(4, SCREEN[0] // 100)
     phonectl("mouse", "to", SCREEN[0] // 2, SCREEN[1] * 7 // 8)
     phonectl("screenshot", BUILD / "test-cursor-away.png")
-    for at in [(0.3, 0.45), (0.7, 0.3), (0.85, 0.2)]:   # empty wallpaper: icons react to hovering
+    # Empty wallpaper: icons and the date at the top react to hovering.
+    for at in [(0.3, 0.45), (0.7, 0.3), (0.85, 0.4)]:
         target = [round(SCREEN[0] * at[0]), round(SCREEN[1] * at[1])]
         phonectl("mouse", "to", *target)
         shot = phonectl("screenshot", path)
@@ -281,7 +289,7 @@ def test_tap_focuses_a_field_and_typing_enters_every_character():
 def test_back_home_and_recents_keys():
     settings()
     phonectl("key", "recents")
-    assert until(lambda: "com.android.settings" not in focus())   # the app switcher has taken over
+    assert until(lambda: "NexusLauncherActivity" in focus())   # the app switcher is the launcher's
     phonectl("key", "back")
     assert until(lambda: "com.android.settings" in focus())
     phonectl("key", "home")

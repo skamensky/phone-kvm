@@ -21,7 +21,6 @@ INTERFACES = {"keyboard": (0, 8), "touch": (1, 6 * CONTACTS + 1), "mouse": (2, 6
 CONSUMER = {
     "home": 0x223,         # AC Home -> HOME
     "back": 0x224,         # AC Back -> BACK
-    "recents": 0x1A2,      # AL Select Task -> APP_SWITCH
     "power": 0x30,         # Power -> POWER
     "volume-up": 0xE9,
     "volume-down": 0xEA,
@@ -32,6 +31,10 @@ CONSUMER = {
     "search": 0x221,       # AC Search -> SEARCH
     "menu": 0x40,
 }
+
+# Keys sent as keyboard combinations. No consumer usage opens the app switcher on every Android:
+# AL Select Task (0x1A2) does up to Android 14 and opens the app drawer from 15 on.
+COMBINATIONS = {"recents": "meta+tab"}
 
 
 def keyboard_report(modifiers=0, keys=()):

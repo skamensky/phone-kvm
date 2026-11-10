@@ -5,6 +5,7 @@ later cannot change it.
 """
 import time
 
+import numpy as np
 from PIL import Image, ImageChops
 
 from . import camera, state
@@ -31,6 +32,31 @@ def changed(a, b):
     """Whether the screen itself differs between two captures, beyond the camera's own noise
     (measured by `calibrate pointer`)."""
     return difference(a, b) > max(8, 2.5 * state.load("calibration").get("noise", 0))
+
+
+def regions(mask):
+    """The connected regions of a black-and-white image's white: (left, top, right, bottom, area)
+    of each."""
+    lit = np.asarray(mask) > 0
+    seen = np.zeros_like(lit)
+    height, width = lit.shape
+    found = []
+    for start in zip(*np.nonzero(lit)):
+        if seen[start]:
+            continue
+        seen[start] = True
+        stack, area = [start], 0
+        top, left, bottom, right = start[0], start[1], start[0], start[1]
+        while stack:
+            y, x = stack.pop()
+            area += 1
+            top, bottom, left, right = min(top, y), max(bottom, y), min(left, x), max(right, x)
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if 0 <= ny < height and 0 <= nx < width and lit[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    stack.append((ny, nx))
+        found.append((int(left), int(top), int(right) + 1, int(bottom) + 1, area))
+    return found
 
 
 def frame(device):

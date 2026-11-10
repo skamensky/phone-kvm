@@ -203,7 +203,7 @@ class Phone:
             self._send("consumer", hid.consumer_report())
             self._flush()
             return
-        modifiers, usage = keymap.combo(name)
+        modifiers, usage = keymap.combo(hid.COMBINATIONS.get(name, name))
         self._send("keyboard", hid.keyboard_report(modifiers, [usage] if usage else []))
         self._pause(hold_ms)
         self._send("keyboard", hid.keyboard_report())
@@ -247,7 +247,9 @@ class Phone:
 
         from PIL import ImageChops, ImageFilter
         width, height = self.size()
-        near, probe = 40, 100
+        # The nearest the cursor is seen to the corner: clear of the status bar, whose items light
+        # up under a cursor and fade afterwards, which would pass for a second cursor.
+        near, probe = 120, 100
 
         def view(counts):
             self._mouse_corner()
@@ -259,17 +261,32 @@ class Phone:
         still = ImageChops.difference(origin, view(near)).convert("L").point(lambda v: 0 if v > 32 else 255)
         still = still.filter(ImageFilter.MinFilter(9))
 
+        grow = 2   # pixels a change is widened by, so that a cursor's parts count as one
+        limit = max(width, height) // 16   # a cursor is no larger than this
+
+        def cursors(other):
+            """Where something the size of a cursor differs between `origin` and `other`: the
+            top-left corner of each. A focus ring or a highlight under the cursor differs too, but
+            is larger."""
+            change = ImageChops.difference(origin, other).convert("L").point(lambda v: 255 if v > 48 else 0)
+            change = ImageChops.multiply(change, still).filter(ImageFilter.MaxFilter(2 * grow + 1))
+            found = []
+            for left, top, right, bottom, area in video.regions(change):
+                across, down = right - left, bottom - top
+                if across <= limit and down <= limit and area >= max(12, across * down // 4):
+                    found.append((left + grow, top + grow))
+            return found
+
         def tips(other):
             """The cursor's tip in `origin` and in `other`, or None if `other` shows no second one."""
-            change = ImageChops.difference(origin, other).convert("L").point(lambda v: 255 if v > 48 else 0)
-            change = ImageChops.multiply(change, still)
-            box = change.getbbox()
-            if box is None:
+            found = cursors(other)
+            if not found:
                 raise RuntimeError("the cursor is not visible on the captured screen")
-            # The origin's cursor is the top-left of what changed; the other is down and right.
-            middle = ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
-            far = change.crop((middle[0], middle[1], box[2], box[3])).getbbox()
-            return far and ((box[0], box[1]), (middle[0] + far[0], middle[1] + far[1]))
+            first = min(found, key=sum)   # the origin's cursor is the nearest to the corner
+            # The other went as many counts down as right, so it lies about diagonally from the first.
+            moved = [(x, y) for x, y in found
+                     if min(x - first[0], y - first[1]) > 0.6 * max(x - first[0], y - first[1]) > 0]
+            return (first, max(moved, key=sum)) if moved else None
 
         # A short move says roughly how far a count goes; the moves measured then span the screen.
         found = tips(view(near + probe))

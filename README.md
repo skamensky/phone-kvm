@@ -68,11 +68,11 @@ PIN or password and `key enter`, or `swipe` through the pattern's dots.
 
 ## The board
 
-    nix develop --command python tools/generate.py   # hardware/circuit.py -> schematic and PCB
-    nix develop --command python tools/board.py      # ERC, DRC, order files, pictures
+    nix develop .#board --command python3 tools/generate.py   # hardware/circuit.py -> schematic and PCB, routed
+    nix develop .#board --command python3 tools/board.py      # ERC, DRC, order files, pictures
 
 `tools/board.py` writes the JLCPCB order files to `build/fab/` and pictures of the board to
-`build/board/`. Edit the circuit in `hardware/circuit.py`, never the KiCad files.
+`build/board/`. The board is 32 x 50 mm, two layers, about $7 of parts. Edit the circuit in `hardware/circuit.py`, never the KiCad files.
 
 ## On the real board
 

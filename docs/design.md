@@ -38,7 +38,7 @@ settle) is Python on the agent's computer.
 | keyboard | boot keyboard, 8 bytes | external keyboard | text, shortcuts, PIN and password entry |
 | touch | 5-contact digitizer, absolute 0..32767, 31 bytes | direct touchscreen (no cursor) | tap, long press, swipe, multi-point path, pinch |
 | mouse | 3 buttons, relative 16-bit X/Y, wheel, 6 bytes | mouse with a cursor | hover, right click, wheel |
-| consumer | one 16-bit usage, 2 bytes | system keys | home, back, recents, power, volume, media |
+| consumer | one 16-bit usage, 2 bytes | system keys | home, back, power, volume, media (recents is the keyboard's Meta+Tab) |
 
 The descriptors live in `firmware/main/usb.c`; the host builds the reports
 (`phone_kvm/hid.py`). A test reads the descriptors back from the phone's kernel and checks
@@ -111,6 +111,11 @@ an agent can act and look without sleeping. See the README for the commands.
 `hardware/circuit.py` is the design: every part with its LCSC number and footprint, and every
 net. `tools/generate.py` writes the KiCad schematic and PCB from it, and `tools/board.py`
 checks them (ERC, DRC against JLCPCB's limits, schematic parity) and writes the order files.
+The board is 32 x 50 mm on two layers: the module at the top with its antenna over bare
+board, the camera connector on the left edge, USB-C on the bottom edge, a ground plane on
+the back. The generator places the parts and routes them with its own grid router, so the
+same circuit always gives the same board. `tests/test_board.py` holds the circuit's camera
+and LED pins to the ones the firmware drives.
 
 | Block | Parts | Why |
 | --- | --- | --- |
@@ -166,9 +171,14 @@ The emulated phone enumerates the board with its own kernel's xHCI, `usbhid` and
 detached from the board the moment it attaches, so the board never types into the laptop.
 `adb` is the tests' oracle and feeds the scene; the device and `phonectl` never use it.
 
+Taking the emulator's display stops the emulator for some 60 ms, and it then hands the phone
+the board's reports late and in a burst: a swipe becomes a jump. So the scene is not refreshed
+while reports are flowing (`rig/cable.py` marks each one), and the phone sees them 8 ms apart
+as a real one does.
+
 ## What the rig proves and what it cannot
 
-Proven by `bin/check` against the emulated phone (21 tests, adb and the emulator's own
+Proven by `bin/check` against the emulated phone (16 of its 24 tests, adb and the emulator's own
 display as oracle): enumeration of all four interfaces and that their descriptors match the
 reports sent, screenshot fidelity, tap accuracy, every printable ASCII character, key
 combinations, home/back/recents/power/volume/media keys, long press, swipe, two-finger
@@ -179,7 +189,10 @@ entry screen is visible to the camera.
 Needs the real board and a real phone:
 
 1. **The board itself.** ERC and DRC pass; whether it works is known when one is assembled.
-   Power is the risk: Wi-Fi transmit peaks on a phone's USB port.
+   Power is the risk: Wi-Fi transmit peaks on a phone's USB port. Before ordering, check the
+   camera connector against the actual module's flex (contact side and which end is pin 1;
+   the footprint is the bottom-contact sibling's, assumed identical) and the part rotations
+   in JLCPCB's placement preview.
 2. **The optics.** Focus at 10 to 20 cm (fixed-focus modules are set for infinity and need
    their lens turned), glare, moire against the pixel grid, exposure of a bright screen in a
    dark room, lens distortion. None is simulated. The mount that holds the camera over the

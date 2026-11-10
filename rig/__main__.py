@@ -42,6 +42,7 @@ DEVICE = "127.0.0.1:7777"      # the board's TCP service, forwarded out of the e
 BOARD_USB = "127.0.0.1:7778"   # the board's USB port: a socket carrying rig/cable.py's frames
 USBIP_PORT = "3241"            # not 3240, which a normal usbipd on this host would use
 PICTURE = RUN / "camera" / "picture.jpg"
+ACTIVITY = RUN / "usb-activity"   # touched by the cable per USB report; the camera view waits on it
 # The virtual phone lies with its top towards the right of the camera's frame.
 CONFIG = {"device": DEVICE, "rotate": 90}
 ID = "1209", "0001"
@@ -101,7 +102,8 @@ def drivers(device):
 def plug_usb():
     if host_device() is None:
         if not pid("cable"):
-            spawn("cable", [sys.executable, "-m", "rig.cable", "--board", BOARD_USB, "--port", USBIP_PORT])
+            spawn("cable", [sys.executable, "-m", "rig.cable", "--board", BOARD_USB, "--port", USBIP_PORT,
+                            "--activity", str(ACTIVITY)])
         for _ in range(50):   # until the board has pulled its USB port up
             if sudo("usbip", "--tcp-port", USBIP_PORT, "attach", "--remote", "127.0.0.1", "--busid", "1-1",
                     check=False).returncode == 0:
@@ -212,7 +214,7 @@ def start_camera(sensor):
         PICTURE.unlink(missing_ok=True)
         spawn("camera", [sys.executable, "-m", "rig.camera", "--adb", ADB, "--serial", SERIAL,
                          "--picture", str(PICTURE), "--scratch", str(RUN / "camera" / "display"),
-                         "--size", sensor])
+                         "--activity", str(ACTIVITY), "--size", sensor])
     for _ in range(100):
         if PICTURE.exists():
             break

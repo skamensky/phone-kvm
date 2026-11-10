@@ -46,6 +46,14 @@
       devShells.x86_64-linux.firmware = espPkgs.mkShell {
         packages = [ espPkgs.esp-idf-xtensa qemu ];
       };
+      # Generating and checking the board: `nix develop .#board`.
+      devShells.x86_64-linux.board = pkgs.mkShell {
+        packages = [ pkgs.kicad (pkgs.python3.withPackages (p: [ p.kicad ])) ];
+        # KiCad's libraries, for tools/generate.py (kicad-cli sets these only for itself).
+        KICAD10_SYMBOL_DIR = "${pkgs.kicad.libraries.symbols}/share/kicad/symbols";
+        KICAD10_FOOTPRINT_DIR = "${pkgs.kicad.libraries.footprints}/share/kicad/footprints";
+        KICAD10_3DMODEL_DIR = "${pkgs.kicad.libraries.packages3d}/share/kicad/3dmodels";
+      };
       devShells.x86_64-linux.default = pkgs.mkShell {
         packages = [
           android.androidsdk
