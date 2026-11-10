@@ -31,7 +31,8 @@
           pkgs.ffmpeg
           pkgs.v4l-utils
           pkgs.usbutils
-          (pkgs.python3.withPackages (p: [ p.pillow p.pytest ]))
+          pkgs.tesseract
+          (pkgs.python3.withPackages (p: [ p.numpy p.pillow p.pytest ]))
         ];
         ANDROID_HOME = sdk;
         ANDROID_SDK_ROOT = sdk;

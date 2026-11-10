@@ -4,6 +4,7 @@
   USB cable    the device's gadget on the kernel's virtual controller (usbip-vudc), attached
                to this host over USB/IP, then passed through into the emulator
   HDMI cable   the emulator's display written to a V4L2 loopback device (rig/hdmi.py)
+  camera       the phone as a camera above it sees it, on a second loopback device (rig/camera.py)
 
   rig up | down | status      one JSON object each
 
@@ -33,8 +34,11 @@ CONSOLE_PORT = 5580
 SERIAL = f"emulator-{CONSOLE_PORT}"
 CONTROLLER = "usbip-vudc.0"
 USBIP_PORT = "3241"  # not 3240, which a normal usbipd on this host would use
-VIDEO_NR = 42
-VIDEO = f"/dev/video{VIDEO_NR}"
+VIDEO_NR, CAMERA_NR = 42, 43
+VIDEO, CAMERA = f"/dev/video{VIDEO_NR}", f"/dev/video{CAMERA_NR}"
+HDMI_VIEW = {"video": VIDEO, "view": "hdmi", "rotate": 0, "size": None, "input_format": None}
+# The virtual phone lies with its top towards the right of the camera's frame.
+CAMERA_VIEW = {"video": CAMERA, "view": "camera", "rotate": 90, "size": None, "input_format": None}
 ID = f"{gadget.VENDOR_ID:04x}", f"{gadget.PRODUCT_ID:04x}"
 ENV = {**os.environ, "ANDROID_AVD_HOME": str(BUILD / "avd"), "ANDROID_USER_HOME": str(BUILD / "android-home")}
 
@@ -158,21 +162,26 @@ def stop_phone():
     stop("emulator")
 
 
-# -- HDMI cable ------------------------------------------------------------------------
-def plug_hdmi(size):
-    if not Path(VIDEO).exists():
-        sudo("modprobe", "v4l2loopback", f"video_nr={VIDEO_NR}", "exclusive_caps=1",
-             "card_label=phone-kvm virtual HDMI capture")
+# -- HDMI cable and camera -----------------------------------------------------------
+def plug_video(hdmi, camera):
+    if not (Path(VIDEO).exists() and Path(CAMERA).exists()):
+        stop("hdmi")
+        sudo("modprobe", "-r", "v4l2loopback", check=False)
+        sudo("modprobe", "v4l2loopback", f"video_nr={VIDEO_NR},{CAMERA_NR}", "exclusive_caps=1,1",
+             "card_label=phone-kvm virtual HDMI capture,phone-kvm virtual camera")
     if not pid("hdmi"):
         spawn("hdmi", [sys.executable, "-m", "rig.hdmi", "--adb", ADB, "--serial", SERIAL,
-                       "--device", VIDEO, "--size", size])
-    state.save("config", {"video": VIDEO})
-    state.save("geometry", {})
-    state.save("mouse", {})
+                       "--device", VIDEO, "--size", hdmi])
+    if not pid("camera"):
+        spawn("camera", [sys.executable, "-m", "rig.camera", "--adb", ADB, "--serial", SERIAL,
+                         "--device", CAMERA, "--scratch", str(RUN / "camera"), "--size", camera])
+    state.save("config", HDMI_VIEW)
+    for record in ("geometry", "calibration", "session"):
+        state.save(record, {})
 
 
 # -- commands --------------------------------------------------------------------------
-def up(size):
+def up(hdmi, camera):
     RUN.mkdir(parents=True, exist_ok=True)
     sudo("modprobe", "-a", "libcomposite", "usbip-vudc", "vhci-hcd")
     if not gadget.status()["up"]:
@@ -180,12 +189,13 @@ def up(size):
              "--controller", CONTROLLER, "--owner", str(os.getuid()))
     plug_usb()
     start_phone()
-    plug_hdmi(size)
+    plug_video(hdmi, camera)
     return status()
 
 
 def down():
     stop("hdmi")
+    stop("camera")
     stop_phone()
     unplug_usb()
     sudo("env", f"PYTHONPATH={ROOT}", sys.executable, "-m", "phone_kvm.gadget", "down")
@@ -201,7 +211,8 @@ def status():
         "usb_cable": {"attached": device is not None, "interface_drivers": drivers(device) if device else None},
         "phone": {"serial": SERIAL, "booted": phone_up, "sees_device": sees},
         "hdmi_cable": {"device": VIDEO, "running": bool(pid("hdmi"))},
-        "ready": bool(sees and pid("hdmi")),
+        "camera": {"device": CAMERA, "running": bool(pid("camera"))},
+        "ready": bool(sees and pid("hdmi") and pid("camera")),
     }
 
 
@@ -210,8 +221,9 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["up", "down", "status"])
     parser.add_argument("--hdmi", default="1920x1080", help="HDMI frame size (up)")
+    parser.add_argument("--camera", default="1600x1200", help="camera sensor resolution (up)")
     args = parser.parse_args()
-    print(json.dumps({"up": lambda: up(args.hdmi), "down": down, "status": status}[args.command](), indent=1))
+    print(json.dumps({"up": lambda: up(args.hdmi, args.camera), "down": down, "status": status}[args.command](), indent=1))
 
 
 if __name__ == "__main__":

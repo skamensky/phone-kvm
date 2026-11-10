@@ -1,6 +1,7 @@
 """The device against the virtual phone. Input goes in only through `phonectl` (USB HID) and
-the screen comes out only through `phonectl screenshot` (HDMI); adb is the oracle that says
-what Android actually did. Needs `bin/rig up`; skipped otherwise.
+the screen comes out only through `phonectl screenshot`; adb is the oracle that says what
+Android actually did. Every test runs twice: seeing the phone through the virtual HDMI capture,
+and through the virtual camera above it. Needs `bin/rig up`; skipped otherwise.
 """
 import io
 import json
@@ -17,7 +18,7 @@ from PIL import Image, ImageChops, ImageStat
 
 if "ANDROID_HOME" not in os.environ:
     pytest.skip("not in the project's Nix shell", allow_module_level=True)
-from rig.__main__ import ADB, BUILD, ENV, SERIAL, adb, status  # noqa: E402
+from rig.__main__ import ADB, BUILD, CAMERA_VIEW, ENV, HDMI_VIEW, SERIAL, adb, status  # noqa: E402
 
 if not status()["ready"]:
     pytest.skip("the rig is not up (bin/rig up)", allow_module_level=True)
@@ -80,17 +81,33 @@ def events(action, seconds=1.5):
     return listener.communicate()[0]
 
 
-@pytest.fixture(scope="module", autouse=True)
-def awake():
+@pytest.fixture(scope="module", autouse=True, params=["hdmi", "camera"])
+def awake(request):
     for secret in CREDENTIALS:   # a failed earlier run may have left the phone locked
         adb("shell", "locksettings", "clear", "--old", shlex.quote(secret), check=False)
     if "Awake" not in adb("shell", "dumpsys", "power").stdout:
         phonectl("key", "power")
     dismiss()
+    phonectl("key", "home")
     # Just after boot the launcher is still starting.
     assert until(lambda: "NexusLauncherActivity" in focus() and node(text="Chrome") is not None, 90)
-    global SCREEN
-    result = phonectl("calibrate")
+    global SCREEN, VIEW
+    VIEW = request.param
+    config = HDMI_VIEW if VIEW == "hdmi" else CAMERA_VIEW
+    phonectl("setup", "--video", config["video"], "--view", VIEW, "--rotate", config["rotate"])
+    if VIEW == "camera":
+        # A camera finds the screen by its light: Settings is light to all four edges, the home
+        # screen's wallpaper is not. Then the pointer on the home screen, which ignores hovering.
+        phonectl("key", "meta+i")
+        assert until(lambda: "com.android.settings" in focus())   # any of its pages is light
+        time.sleep(2)
+        phonectl("calibrate", "screen")
+        phonectl("key", "home")
+        assert until(lambda: "NexusLauncherActivity" in focus())
+        time.sleep(1)
+        result = phonectl("calibrate", "pointer")
+    else:
+        result = phonectl("calibrate")
     SCREEN = result["width"], result["height"]
 
 
@@ -154,16 +171,75 @@ def test_android_enumerates_all_four_interfaces():
     assert all("IsExternal: true" in block for block in ours)
 
 
+def display():
+    """What the phone's panel shows, from the emulator itself (the oracle)."""
+    folder = BUILD / "run" / "oracle"
+    folder.mkdir(exist_ok=True)
+    for old in folder.glob("*.png"):
+        old.unlink()
+    adb("emu", "screenrecord", "screenshot", str(folder))
+    return Image.open(next(folder.glob("*.png"))).convert("RGB")
+
+
 def test_screenshot_shows_what_the_phone_displays():
     path = BUILD / "test-screenshot.png"
     shot = phonectl("screenshot", path)
     seen = Image.open(path).convert("RGB")
-    assert seen.size == (shot["width"], shot["height"])
-    raw = subprocess.run([ADB, "-s", SERIAL, "exec-out", "screencap", "-p"], capture_output=True, env=ENV).stdout
-    truth = Image.open(io.BytesIO(raw)).convert("RGB")
+    assert seen.size == (shot["width"], shot["height"]) == SCREEN
+    truth = display()
     assert abs(seen.width / seen.height - truth.width / truth.height) < 0.01
     difference = ImageStat.Stat(ImageChops.difference(seen, truth.resize(seen.size))).mean
     assert max(difference) < 6, difference
+
+
+def test_lock_screen_entry_is_visible_only_to_a_camera():
+    """Android blanks secure windows on its video output; a camera sees the panel itself."""
+    try:
+        lock_with("pin", PIN)
+        assert until(lambda: node(resource_id="com.android.systemui:id/pinEntry")) is not None
+        path = BUILD / "test-lock.png"
+        phonectl("screenshot", path)
+        seen = Image.open(path).convert("L")
+        if VIEW == "hdmi":
+            assert seen.getextrema()[1] < 24
+        else:
+            difference = ImageStat.Stat(ImageChops.difference(seen, display().convert("L").resize(seen.size))).mean
+            assert seen.getextrema()[1] > 150 and difference[0] < 6, difference
+        phonectl("type", PIN)
+        phonectl("key", "enter")
+        assert until(lambda: not locked())
+    finally:
+        adb("shell", "locksettings", "clear", "--old", PIN, check=False)
+
+
+def cursor(path):
+    """Where the cursor's tip is in a screenshot, by comparing with one where it is elsewhere."""
+    change = ImageChops.difference(Image.open(path), Image.open(BUILD / "test-cursor-away.png")).convert("L")
+    # Between the status bar, whose clock changes, and the other cursor at the bottom.
+    top = SCREEN[1] // 12
+    left, upper = change.crop((0, top, SCREEN[0], SCREEN[1] * 3 // 4)).point(lambda v: 255 if v > 48 else 0).getbbox()[:2]
+    return left, upper + top
+
+
+def test_screenshot_says_where_the_cursor_is_and_never_predates_an_input():
+    path, slack = BUILD / "test-cursor.png", max(4, SCREEN[0] // 100)
+    phonectl("mouse", "to", SCREEN[0] // 2, SCREEN[1] * 7 // 8)
+    phonectl("screenshot", BUILD / "test-cursor-away.png")
+    for at in [(0.3, 0.45), (0.7, 0.3), (0.85, 0.2)]:   # empty wallpaper: icons react to hovering
+        target = [round(SCREEN[0] * at[0]), round(SCREEN[1] * at[1])]
+        phonectl("mouse", "to", *target)
+        shot = phonectl("screenshot", path)
+        assert shot["pointer"] == target and shot["settled"]
+        seen = cursor(path)
+        assert abs(seen[0] - target[0]) <= slack and abs(seen[1] - target[1]) <= slack, (seen, target)
+    # A relative move is tracked too, and a screenshot taken at once, with no settling, already
+    # shows it: it waits out the measured delay between an input and the image.
+    phonectl("mouse", "move", -60, 40)
+    shot = phonectl("screenshot", path, "--settle-ms", 0)
+    assert shot["ms_since_input"] >= phonectl("status")["calibration"]["latency_ms"]
+    seen = cursor(path)
+    assert shot["pointer"][0] < target[0] and shot["pointer"][1] > target[1]
+    assert abs(seen[0] - shot["pointer"][0]) <= slack and abs(seen[1] - shot["pointer"][1]) <= slack, (seen, shot)
 
 
 def test_tap_focuses_a_field_and_typing_enters_every_character():
@@ -269,7 +345,6 @@ def test_pinch_is_two_fingers():
 
 
 def test_mouse_points_clicks_and_scrolls():
-    phonectl("mouse", "calibrate")   # on the home screen, which ignores hovering
     settings()
     phonectl("mouse", "scroll", 6)
     assert until(lambda: node(text="Network & internet") is None or bounds(node(text="Network & internet"))[1] < 300)
