@@ -246,7 +246,3 @@ Measured in the rig: a picture takes about 60 ms, 20 input reports 0.11 s.
   command does not.
 - Have `rig up --phone real` give the webcam its exposure and sharpness (the README has the
   command, run by hand so far).
-
-- Run the emulator tests (`bin/rig up`, `bin/check`) against `mouse to` as it is since it
-  corrects itself by camera. It has only been tried on a real phone; the rig was up with
-  that phone at the time, and the tests need the virtual one.
