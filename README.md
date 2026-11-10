@@ -43,7 +43,14 @@ a webcam on this host as the board's camera:
 
 `--serial` is the phone as `adb devices` names it. The phone gets the board's four HID
 interfaces as devices in its own kernel (`rig/uhid.py`). `python -m rig.view` serves the
-camera's picture to a browser, for aiming the webcam.
+camera's picture to a browser, for aiming the webcam; `--rotate 90` turns it upright there.
+
+The rig leaves the webcam's own settings alone. A phone's screen is lit in pulses, which a
+webcam on automatic exposure shows as dark bands, and its picture is soft by default. On a
+NexiGo N60 (fixed focus: the phone has to lie at the distance where it is sharp) this gave a
+steady, sharp picture, and has to be given again after the webcam is replugged:
+
+    v4l2-ctl -d /dev/video0 -c auto_exposure=1 -c exposure_time_absolute=166 -c gain=0 -c sharpness=200
 
 ## Using the phone
 
