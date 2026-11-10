@@ -238,6 +238,41 @@ class Phone:
         (gx, gy), (ox, oy) = calibration["pixels_per_count"], calibration["offset"]
         self.session["pointer"] = [round(ox + counts_x * gx), round(oy + counts_y * gy)]
 
+    def _cursor_limit(self):
+        """A cursor is no larger than this, in screenshot pixels."""
+        return max(self.size()) // 16
+
+    def _cursors(self, a, b, still=None):
+        """Where something the size of a cursor differs between two captures: the top-left corner
+        of each, which for a cursor is its tip. A focus ring or a highlight under the cursor
+        differs too, but is larger. `still` blacks out what changes on its own."""
+        from PIL import ImageChops, ImageFilter
+        grow = 2   # pixels a change is widened by, so that a cursor's parts count as one
+        limit = self._cursor_limit()
+        change = ImageChops.difference(a, b).convert("L").point(lambda v: 255 if v > 48 else 0)
+        if still:
+            change = ImageChops.multiply(change, still)
+        found = []
+        for left, top, right, bottom, area in video.regions(change.filter(ImageFilter.MaxFilter(2 * grow + 1))):
+            across, down = right - left, bottom - top
+            if across <= limit and down <= limit and area >= max(12, across * down // 4):
+                found.append((left + grow, top + grow))
+        return found
+
+    def _cursor_after(self, before, after, moved):
+        """The cursor's tip in `after`, given that it moved by about `moved` pixels since `before`:
+        the two captures differ where it was and where it is, that far apart. None if no two
+        differences lie so."""
+        found = self._cursors(before, after)
+        allowed = 0.25 * max(abs(moved[0]), abs(moved[1])) + 4
+        best = None
+        for was in found:
+            for now in found:
+                miss = max(abs(now[0] - was[0] - moved[0]), abs(now[1] - was[1] - moved[1]))
+                if was is not now and miss <= allowed and (best is None or miss < best[0]):
+                    best = miss, now
+        return best and best[1]
+
     def _mouse_calibrate(self):
         """Measure, by watching the screen, how many screenshot pixels one mouse count moves the
         cursor. The cursor is seen at several places down a diagonal and a line is fitted through
@@ -246,7 +281,6 @@ class Phone:
         from statistics import median
 
         from PIL import ImageChops, ImageFilter
-        width, height = self.size()
         # The nearest the cursor is seen to the corner: clear of the status bar, whose items light
         # up under a cursor and fade afterwards, which would pass for a second cursor.
         near, probe = 120, 100
@@ -261,25 +295,9 @@ class Phone:
         still = ImageChops.difference(origin, view(near)).convert("L").point(lambda v: 0 if v > 32 else 255)
         still = still.filter(ImageFilter.MinFilter(9))
 
-        grow = 2   # pixels a change is widened by, so that a cursor's parts count as one
-        limit = max(width, height) // 16   # a cursor is no larger than this
-
-        def cursors(other):
-            """Where something the size of a cursor differs between `origin` and `other`: the
-            top-left corner of each. A focus ring or a highlight under the cursor differs too, but
-            is larger."""
-            change = ImageChops.difference(origin, other).convert("L").point(lambda v: 255 if v > 48 else 0)
-            change = ImageChops.multiply(change, still).filter(ImageFilter.MaxFilter(2 * grow + 1))
-            found = []
-            for left, top, right, bottom, area in video.regions(change):
-                across, down = right - left, bottom - top
-                if across <= limit and down <= limit and area >= max(12, across * down // 4):
-                    found.append((left + grow, top + grow))
-            return found
-
         def tips(other):
             """The cursor's tip in `origin` and in `other`, or None if `other` shows no second one."""
-            found = cursors(other)
+            found = self._cursors(origin, other, still)
             if not found:
                 raise RuntimeError("the cursor is not visible on the captured screen")
             first = min(found, key=sum)   # the origin's cursor is the nearest to the corner
@@ -293,7 +311,7 @@ class Phone:
         rough = found and max((found[1][axis] - found[0][axis]) / probe for axis in (0, 1))
         if not rough or rough <= 0.05:
             raise RuntimeError("could not see the cursor move; calibrate on a still screen")
-        reach = 0.8 * min(width, height) / rough
+        reach = 0.8 * min(self.size()) / rough
         points = []   # (counts, tip x, tip y)
         for part in (0.3, 0.45, 0.6, 0.8, 1.0):
             counts = near + round(reach * part)
@@ -340,7 +358,11 @@ class Phone:
         state.save("calibration", calibration)
 
     def mouse_to(self, x, y):
-        """Put the cursor's tip on a screenshot pixel: into the corner, then out by dead reckoning."""
+        """Put the cursor's tip on a screenshot pixel. Dead reckoning from the corner gets it
+        near; then the camera says where it is, and it is moved by what is missing. The cursor is
+        found by moving it: it is what differs between the pictures before and after, the move
+        apart. Says where the cursor is and whether it was seen there; unseen (on a screen that
+        changes by itself, such as a video), it is where dead reckoning put it."""
         width, height = self.size()
         if not (0 <= x < width and 0 <= y < height):
             raise ValueError(f"({x}, {y}) is outside the {width}x{height} screen")
@@ -349,6 +371,26 @@ class Phone:
             raise RuntimeError("the mouse is not calibrated (run: phonectl calibrate)")
         (gx, gy), (ox, oy) = calibration["pixels_per_count"], calibration["offset"]
         self._mouse_from_corner(max(0, round((x - ox) / gx)), max(0, round((y - oy) / gy)), calibration)
+        # First aside, towards the middle of the screen, far enough that the cursor's two places
+        # do not touch; then back onto the target from where it was seen.
+        aside = self._cursor_limit() * 3 // 4
+        move = [round((aside if x < width / 2 else -aside) / gx), round((aside if y < height / 2 else -aside) / gy)]
+        seen, before = False, self._capture(2000)[0]
+        for _ in range(3):
+            self.mouse_move(*move)
+            after = self._capture(2000)[0]
+            tip = self._cursor_after(before, after, (move[0] * gx, move[1] * gy))
+            if not tip:
+                if not seen:
+                    self.mouse_move(-move[0], -move[1])
+                break
+            seen, self.session["pointer"] = True, list(tip)
+            move, before = [round((x - tip[0]) / gx), round((y - tip[1]) / gy)], after
+            if max(abs(x - tip[0]), abs(y - tip[1])) < aside // 2:
+                if any(move):   # too short a move to see, and too short to go wrong
+                    self.mouse_move(*move)
+                break
+        return {"pointer": self.session["pointer"], "seen": seen}
 
     def mouse_click(self, button="left", hold_ms=40):
         self._send("mouse", hid.mouse_report(self.BUTTONS[button]))

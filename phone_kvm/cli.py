@@ -110,7 +110,7 @@ def act(phone, args):
             phone.key(key, args.hold_ms)
     elif args.command == "mouse":
         if args.action == "to":
-            phone.mouse_to(args.x, args.y)
+            return {"ok": True, **phone.mouse_to(args.x, args.y)}
         elif args.action == "move":
             phone.mouse_move(args.dx, args.dy)
         elif args.action == "click":

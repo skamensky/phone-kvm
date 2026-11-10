@@ -92,8 +92,13 @@ Three stored measurements tie the image an agent sees to the inputs it sends
   reaches anywhere) sent after 400 ms of stillness. Calibration runs the cursor into the
   top-left corner, steps it out along a diagonal, finds its tip at each stop by differencing
   screenshots (ignoring areas that change by themselves, such as the clock) and fits a line.
-  The session then tracks the cursor from the counts it sends; `screenshot` reports it as
-  `pointer`, and it is unknown (null) until `mouse to` or calibration has placed it.
+  `mouse to` uses the fit only to get near: on a real phone under a camera it was 5% out
+  down the screen, 70 pixels at the bottom. It then moves the cursor aside, finds it as the
+  two differences between the pictures before and after that lie the move apart, and moves
+  it by what is missing, looking again after any move long enough to see. It reports
+  `pointer` and `seen`; unseen (a screen that changes by itself), the cursor is left where
+  the fit put it. The session tracks the cursor from there by the counts it sends;
+  `screenshot` reports it as `pointer`, null until `mouse to` or calibration has placed it.
 - **When** (`latency_ms`, `noise`): the time from an input to the first picture that shows
   all of it, measured with cursor jumps, and how much two pictures of a still screen differ.
   `screenshot` does not capture before the last input's latency has passed, so an image

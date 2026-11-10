@@ -63,6 +63,9 @@ Every command prints one JSON object. Positions are pixels of the screenshot.
 
 The loop for an agent is: `screenshot`, read the image, act, `screenshot`.
 
+`mouse to` looks where the cursor landed and corrects it, so it takes a few seconds and answers
+with `pointer` and `seen` (false when the cursor could not be found on the screen).
+
 `screenshot` also reports `captured_at`, `ms_since_input`, `settled` and `pointer`: where the
 mouse cursor is in that image, or null when it is not known. `calibrate` measures what ties
 the image to the inputs: where the screen is in the camera's frame, how far the cursor moves
